@@ -1,0 +1,35 @@
+# docker/Dockerfile.dashboard
+# Streamlit Dashboard for Crypto Analytics Platform
+
+FROM python:3.11-slim
+
+LABEL maintainer="data-engineering@crypto-analytics.io"
+LABEL description="Streamlit Dashboard for Crypto Analytics"
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Create app user ────────────────────────────────────────────────────────────
+RUN useradd -m -u 1001 appuser
+
+WORKDIR /app
+
+# ── Install Python dependencies ───────────────────────────────────────────────
+COPY dashboard/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --default-timeout=300 -r /tmp/requirements.txt
+
+# ── Copy dashboard code ───────────────────────────────────────────────────────
+COPY dashboard/ dashboard/
+
+# ── Streamlit config ──────────────────────────────────────────────────────────
+RUN mkdir -p /app/.streamlit
+RUN echo '[server]\nheadless = true\nport = 8501\nenableCORS = false\nenableXsrfProtection = false\n\n[theme]\nbase = "dark"\nprimaryColor = "#58a6ff"\nbackgroundColor = "#0d1117"\nsecondaryBackgroundColor = "#161b22"\ntextColor = "#e6edf3"\n' > /app/.streamlit/config.toml
+
+RUN chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "dashboard/app.py", "--server.address=0.0.0.0"]

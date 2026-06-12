@@ -1,0 +1,37 @@
+# docker/Dockerfile.alert-engine
+# Alert Engine API + Notification Service
+
+FROM python:3.11-slim
+
+LABEL maintainer="data-engineering@crypto-analytics.io"
+LABEL description="Alert Engine API and Notification Service"
+
+# ── System deps ───────────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Create app user ────────────────────────────────────────────────────────────
+RUN useradd -m -u 1001 appuser
+
+WORKDIR /app
+
+# ── Install Python dependencies first (layer caching) ─────────────────────────
+COPY docker/requirements.alert-engine.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --default-timeout=300 --retries 5 -r /tmp/requirements.txt
+
+# ── Copy application code ──────────────────────────────────────────────────────
+COPY alert_engine/ alert_engine/
+COPY scripts/      scripts/
+
+ENV PYTHONPATH="/app"
+
+# ── Switch to non-root user ────────────────────────────────────────────────────
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# Default: start Alert API on port 8000
+EXPOSE 8000 8001
+
+CMD ["uvicorn", "alert_engine.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

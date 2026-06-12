@@ -1,0 +1,24 @@
+# k8s/kafka-init-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+  namespace: crypto-analytics
+spec:
+  template:
+    spec:
+      containers:
+      - name: kafka-init
+        image: confluentinc/cp-kafka:7.7.1
+        command:
+        - /bin/sh
+        - -c
+        - |
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-crypto-ticks --partitions 5 --replication-factor 1
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-ohlcv --partitions 5 --replication-factor 1
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-orderbook --partitions 5 --replication-factor 1
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic processed-signals --partitions 5 --replication-factor 1
+          kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic alert-events --partitions 5 --replication-factor 1
+          echo "Topics created successfully"
+      restartPolicy: OnFailure
+  backoffLimit: 4

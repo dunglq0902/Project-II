@@ -1,0 +1,77 @@
+# docker/Dockerfile.spark
+# Custom Spark image with Delta Lake, Kafka connector, and project code
+# Kiến trúc điều chỉnh: Spark 3.5.2 + Delta 3.2.0
+
+FROM apache/spark:3.5.2-scala2.12-java17-python3-ubuntu
+
+USER root
+
+# ── System dependencies ────────────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Python dependencies ────────────────────────────────────────────────────────
+# NOTE: pyspark is already provided by the base image — only install extras
+COPY docker/requirements.spark.txt /tmp/requirements.spark.txt
+RUN pip install --no-cache-dir --no-deps delta-spark==3.2.0 && \
+    pip install --no-cache-dir --default-timeout=300 --retries 5 -r /tmp/requirements.spark.txt
+
+# ── Download JARs: Delta Lake + Kafka + MongoDB connector ─────────────────────
+ENV DELTA_VERSION=3.2.0
+ENV KAFKA_VERSION=3.5.2
+ENV KAFKA_CLIENT_VERSION=3.7.0
+ENV MONGO_SPARK_VERSION=10.3.0
+ENV MONGO_JAVA_DRIVER_VERSION=4.11.1
+ENV SCALA_VERSION=2.12
+
+RUN curl -fsSL -o /opt/spark/jars/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar \
+        "https://repo1.maven.org/maven2/io/delta/delta-spark_${SCALA_VERSION}/${DELTA_VERSION}/delta-spark_${SCALA_VERSION}-${DELTA_VERSION}.jar" && \
+    curl -fsSL -o /opt/spark/jars/delta-storage-${DELTA_VERSION}.jar \
+        "https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar" && \
+    curl -fsSL -o /opt/spark/jars/spark-sql-kafka-0-10_${SCALA_VERSION}-${KAFKA_VERSION}.jar \
+        "https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_${SCALA_VERSION}/${KAFKA_VERSION}/spark-sql-kafka-0-10_${SCALA_VERSION}-${KAFKA_VERSION}.jar" && \
+    curl -fsSL -o /opt/spark/jars/spark-token-provider-kafka-0-10_${SCALA_VERSION}-${KAFKA_VERSION}.jar \
+        "https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_${SCALA_VERSION}/${KAFKA_VERSION}/spark-token-provider-kafka-0-10_${SCALA_VERSION}-${KAFKA_VERSION}.jar" && \
+    curl -fsSL -o /opt/spark/jars/kafka-clients-${KAFKA_CLIENT_VERSION}.jar \
+        "https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/${KAFKA_CLIENT_VERSION}/kafka-clients-${KAFKA_CLIENT_VERSION}.jar" && \
+    curl -fsSL -o /opt/spark/jars/commons-pool2-2.11.1.jar \
+        "https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar" && \
+    curl -fsSL -o /opt/spark/jars/mongo-spark-connector_${SCALA_VERSION}-${MONGO_SPARK_VERSION}.jar \
+        "https://repo1.maven.org/maven2/org/mongodb/spark/mongo-spark-connector_${SCALA_VERSION}/${MONGO_SPARK_VERSION}/mongo-spark-connector_${SCALA_VERSION}-${MONGO_SPARK_VERSION}.jar" && \
+    curl -fsSL -o /opt/spark/jars/bson-4.8.2.jar \
+        "https://repo1.maven.org/maven2/org/mongodb/bson/4.8.2/bson-4.8.2.jar" && \
+    curl -fsSL -o /opt/spark/jars/bson-record-codec-4.8.2.jar \
+        "https://repo1.maven.org/maven2/org/mongodb/bson-record-codec/4.8.2/bson-record-codec-4.8.2.jar" && \
+    curl -fsSL -o /opt/spark/jars/mongodb-driver-core-4.8.2.jar \
+        "https://repo1.maven.org/maven2/org/mongodb/mongodb-driver-core/4.8.2/mongodb-driver-core-4.8.2.jar" && \
+    curl -fsSL -o /opt/spark/jars/mongodb-driver-sync-4.8.2.jar \
+        "https://repo1.maven.org/maven2/org/mongodb/mongodb-driver-sync/4.8.2/mongodb-driver-sync-4.8.2.jar"
+
+# ── Hadoop-AWS JAR for S3/MinIO compatibility ─────────────────────────────────
+RUN curl -fsSL -o /opt/spark/jars/hadoop-aws-3.3.4.jar \
+        "https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar" && \
+    curl -fsSL -o /opt/spark/jars/aws-java-sdk-bundle-1.12.262.jar \
+        "https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.262/aws-java-sdk-bundle-1.12.262.jar"
+
+# ── Copy project source code ───────────────────────────────────────────────────
+WORKDIR /opt/spark/work-dir
+
+COPY spark/         spark/
+COPY ingestion/     ingestion/
+
+# Make Python modules importable
+ENV PYTHONPATH="/opt/spark/work-dir"
+
+# ── Spark default config ───────────────────────────────────────────────────────
+COPY docker/spark-defaults.conf /opt/spark/conf/spark-defaults.conf
+
+# ── Non-root user for production ──────────────────────────────────────────────
+RUN useradd -m -u 1001 sparkuser && \
+    mkdir -p /opt/spark/work /opt/spark/logs /tmp/spark-work /tmp/spark-local && \
+    chown -R sparkuser:sparkuser /opt/spark/work-dir /opt/spark/work /opt/spark/logs /tmp/spark-work /tmp/spark-local
+USER sparkuser
+
+ENTRYPOINT ["/opt/entrypoint.sh"]

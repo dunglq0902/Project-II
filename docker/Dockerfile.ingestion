@@ -1,0 +1,30 @@
+# docker/Dockerfile.ingestion
+# Binance WebSocket/REST producers + APScheduler
+
+FROM python:3.11-slim
+
+LABEL maintainer="data-engineering@crypto-analytics.io"
+LABEL description="Binance API Kafka producers with APScheduler"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1001 producer
+
+WORKDIR /app
+
+COPY docker/requirements.ingestion.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --default-timeout=300 --retries 5 -r /tmp/requirements.txt
+
+COPY ingestion/ ingestion/
+RUN touch ingestion/__init__.py
+
+ENV PYTHONPATH="/app"
+
+RUN chown -R producer:producer /app
+RUN mkdir -p /data/ingestion && chown -R producer:producer /data/ingestion
+USER producer
+
+# Default: run unified ingestion service (WebSocket + APScheduler)
+CMD ["python", "-m", "ingestion.main"]

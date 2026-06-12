@@ -1,0 +1,8 @@
+# k8s/00-namespace.yaml
+# Tạo namespace cho toàn bộ project
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crypto-analytics
+  labels:
+    project: crypto-analytics-platform

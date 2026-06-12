@@ -1,0 +1,24 @@
+# docker/requirements.spark.txt
+# PySpark job dependencies (JARs are downloaded separately in Dockerfile)
+# NOTE: pyspark is NOT listed here because the base image (apache/spark:3.5.2)
+# already ships with PySpark. Installing it again would be redundant and slow.
+
+
+
+# Kafka producer (used in ingestion scripts imported by Spark)
+confluent-kafka==2.3.0
+
+# MongoDB connector Python side
+pymongo==4.6.1
+motor==3.4.0
+
+# Data processing
+pandas==2.0.3
+numpy==1.24.4
+pyarrow==14.0.2
+# pandas-ta (technical-analysis helpers) removed from Spark image requirements
+# Install locally or add a specific, compatible wheel if required for your environment
+
+# Utilities
+python-dotenv==1.0.0
+requests==2.31.0

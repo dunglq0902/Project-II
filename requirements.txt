@@ -1,0 +1,27 @@
+# Aggregated Python dependencies for the full project.
+# Covers ingestion, Spark jobs, alert-engine, and tests.
+
+# ── Ingestion ─────────────────────────────────────────────────
+aiohttp==3.9.1
+asyncio-throttle==1.0.2
+confluent-kafka==2.3.0
+python-dotenv==1.0.0
+requests==2.31.0
+websockets==12.0
+apscheduler==3.10.4
+
+# ── Spark / data processing ──────────────────────────────────
+delta-spark==3.2.0
+numpy==1.24.4
+pandas==2.0.3
+pyarrow==14.0.2
+pyspark==3.5.2
+
+# ── Alert engine / API ───────────────────────────────────────
+fastapi==0.111.0
+httpx==0.27.0
+motor==3.4.0
+pydantic==2.7.0
+pymongo==4.6.1
+uvicorn[standard]==0.30.0
+

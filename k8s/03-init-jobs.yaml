@@ -1,0 +1,125 @@
+# k8s/03-init-jobs.yaml
+# Init Jobs: Kafka topics + MinIO buckets + MongoDB seed
+---
+# ============================================================
+# KAFKA INIT JOB - Tạo topics cần thiết
+# ============================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-init
+  namespace: crypto-analytics
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-kafka
+          image: confluentinc/cp-kafka:7.7.1
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for Kafka to be ready..."
+              until kafka-topics --bootstrap-server kafka:29092 --list > /dev/null 2>&1; do
+                echo "Kafka not ready yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "Kafka is ready!"
+      containers:
+        - name: kafka-init
+          image: confluentinc/cp-kafka:7.7.1
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating Kafka topics..."
+              kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-crypto-ticks --partitions 5 --replication-factor 1
+              kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-ohlcv --partitions 5 --replication-factor 1
+              kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-orderbook --partitions 5 --replication-factor 1
+              kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic processed-signals --partitions 5 --replication-factor 1
+              kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic alert-events --partitions 5 --replication-factor 1
+              echo "All Kafka topics created successfully!"
+              kafka-topics --bootstrap-server kafka:29092 --list
+---
+# ============================================================
+# MINIO INIT JOB - Tạo buckets cần thiết
+# ============================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init
+  namespace: crypto-analytics
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-minio
+          image: alpine:latest
+          command: ["sh", "-c", "apk add --no-cache netcat-openbsd > /dev/null 2>&1; echo 'Waiting for MinIO...'; until nc -z minio 9000; do sleep 3; done; echo 'MinIO ready!'"]
+      containers:
+        - name: mc
+          image: minio/mc:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              mc alias set myminio http://minio:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
+              mc mb myminio/crypto-lake --ignore-existing
+              mc mb myminio/checkpoints --ignore-existing
+              echo "MinIO buckets created successfully!"
+              mc ls myminio/
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: minio-credentials
+                  key: root-password
+---
+# ============================================================
+# MONGO SEED JOB - Seed dữ liệu ban đầu (alert rules)
+# ============================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-seed
+  namespace: crypto-analytics
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-for-mongodb
+          image: alpine:latest
+          command:
+            - sh
+            - -c
+            - |
+              apk add --no-cache netcat-openbsd > /dev/null 2>&1
+              echo "Waiting for MongoDB..."
+              until nc -z mongodb 27017; do
+                sleep 3
+              done
+              echo "MongoDB ready! Waiting extra 10s for auth init..."
+              sleep 10
+      containers:
+        - name: mongo-seed
+          image: crypto-analytics/alert-engine:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - scripts/seed_data.py
+            - --mongo-uri
+            - "mongodb://root:changeme@mongodb:27017"
+            - --db
+            - crypto_analytics
+

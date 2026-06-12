@@ -1,0 +1,395 @@
+# ─────────────────────────────────────────────
+# Cryptocurrency Analytics Platform
+# ─────────────────────────────────────────────
+
+x-spark-common: &spark-common
+  image: crypto-analytics/spark:latest
+  build:
+    context: .
+    dockerfile: docker/Dockerfile.spark
+  environment:
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    S3_ENDPOINT: http://minio:9000
+    AWS_ACCESS_KEY_ID: admin
+    AWS_SECRET_ACCESS_KEY: password
+    AWS_REGION: us-east-1
+    MONGO_URI: mongodb://root:changeme@mongodb:27017
+    SPARK_MASTER: spark://spark-master:7077
+    SPARK_WORKER_DIR: /tmp/spark-work
+    SPARK_LOCAL_DIRS: /tmp/spark-local
+    PYTHONPATH: /opt/spark/work-dir/spark:/opt/spark/work-dir
+  volumes:
+    - ./spark:/opt/spark/work-dir/spark
+  depends_on:
+    kafka:
+      condition: service_healthy
+    minio:
+      condition: service_started
+  networks:
+    - crypto-net
+
+services:
+
+  # ── Kafka (KRaft mode — no Zookeeper) ──────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: crypto-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      # KRaft mode configuration
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms512M"
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    healthcheck:
+      test: [ "CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list" ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+    networks:
+      - crypto-net
+
+  # ── MinIO (single-node) ────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: crypto-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+    networks:
+      - crypto-net
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: crypto-minio-init
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c " sleep 5; /usr/bin/mc config host add myminio http://minio:9000 admin password; /usr/bin/mc mb myminio/crypto-lake || true; /usr/bin/mc mb myminio/checkpoints || true; exit 0; "
+    networks:
+      - crypto-net
+
+  # ── MongoDB ────────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: crypto-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: changeme
+      MONGO_INITDB_DATABASE: crypto_analytics
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: [ "CMD", "mongosh", "--eval", "db.adminCommand('ping')" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+        reservations:
+          memory: 128M
+    networks:
+      - crypto-net
+
+  # ── Spark Master ───────────────────────────────────────────────────────────
+  spark-master:
+    <<: *spark-common
+    container_name: crypto-spark-master
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+    command: [ "/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master" ]
+    ports:
+      - "7077:7077"
+      - "4040:4040"
+      - "8082:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: us-east-1
+      MONGO_URI: mongodb://root:changeme@mongodb:27017
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_MASTER_HOST: spark-master
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080" ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+
+  # ── Spark Worker ───────────────────────────────────────────────────────────
+  spark-worker:
+    <<: *spark-common
+    container_name: crypto-spark-worker
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:7077
+    depends_on:
+      spark-master:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: admin
+      AWS_SECRET_ACCESS_KEY: password
+      AWS_REGION: us-east-1
+      MONGO_URI: mongodb://root:changeme@mongodb:27017
+      SPARK_MASTER: spark://spark-master:7077
+      SPARK_WORKER_MEMORY: 2g
+      SPARK_WORKER_CORES: 2
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
+        reservations:
+          memory: 1G
+
+  # ── Unified Spark Streaming Job (Bronze → Silver → Gold → Alerts) ──────────
+  spark-unified-job:
+    <<: *spark-common
+    container_name: crypto-spark-unified
+    command: >
+      /opt/spark/bin/spark-submit --master spark://spark-master:7077 --conf "spark.driver.memory=512m" --conf "spark.executor.memory=1g" --conf "spark.executor.cores=2" --conf "spark.sql.shuffle.partitions=4" --conf "spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension" --conf "spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog" spark/jobs/unified_streaming.py
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      spark-master:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+    networks:
+      - crypto-net
+
+  # ── Alert Engine API ───────────────────────────────────────────────────────
+  alert-api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.alert-engine
+    container_name: crypto-alert-api
+    ports:
+      - "8000:8000"
+    environment:
+      MONGO_URI: mongodb://root:changeme@mongodb:27017
+      MONGO_DB: crypto_analytics
+      NOTIFICATION_SVC: http://notification-service:8001
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+    networks:
+      - crypto-net
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.alert-engine
+    container_name: crypto-notification-svc
+    command: [ "uvicorn", "alert_engine.notifier.notification_service:app", "--host", "0.0.0.0", "--port", "8001" ]
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.1'
+        reservations:
+          memory: 64M
+    networks:
+      - crypto-net
+
+  # ── Alert Consumer Bridge (Kafka → Alert API) ───────────────────────────────
+  alert-consumer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.alert-engine
+    container_name: crypto-alert-consumer
+    command: [ "python", "-m", "alert_engine.consumer.alert_consumer" ]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ALERT_API_URL: http://alert-api:8000
+      ALERT_TOPIC: alert-events
+      CONSUMER_GROUP_ID: alert-consumer-group
+      MAX_RETRIES: "3"
+      RETRY_BACKOFF_SECONDS: "2.0"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      alert-api:
+        condition: service_started
+    volumes:
+      - alert-consumer-dlq:/tmp/alert-consumer-dlq
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.15'
+        reservations:
+          memory: 64M
+    restart: unless-stopped
+    networks:
+      - crypto-net
+
+  # ── Dashboard (Streamlit) ──────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: crypto-dashboard
+    ports:
+      - "8501:8501"
+    environment:
+      MONGO_URI: mongodb://root:changeme@mongodb:27017
+      MONGO_DB: crypto_analytics
+      ALERT_API_URL: http://alert-api:8000
+      NOTIFICATION_SVC: http://notification-service:8001
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      alert-api:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+    networks:
+      - crypto-net
+
+  # ── Initialization ─────────────────────────────────────────────────────────
+  kafka-init:
+    image: confluentinc/cp-kafka:7.7.1
+    container_name: crypto-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c " echo 'Creating Kafka topics...' && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-crypto-ticks --partitions 5 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-ohlcv --partitions 5 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic raw-orderbook --partitions 5 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic processed-signals --partitions 5 --replication-factor 1 && kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic alert-events --partitions 5 --replication-factor 1 && echo 'Kafka topics created.' "
+    networks:
+      - crypto-net
+
+  mongo-seed:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.alert-engine
+    container_name: crypto-mongo-seed
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/app/scripts:ro
+    command: >
+      python scripts/seed_data.py --mongo-uri mongodb://root:changeme@mongodb:27017 --db crypto_analytics
+    networks:
+      - crypto-net
+
+  # ── Ingestion Service (WebSocket + APScheduler + Startup Backfill) ──────────
+  ingestion-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.ingestion
+    container_name: crypto-ingestion-service
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      BACKFILL_MARKER_DIR: /data/ingestion
+      HEARTBEAT_INTERVAL: "60"
+      MAX_BACKFILL_HOURS: "48"
+    volumes:
+      - ingestion-data:/data/ingestion
+    stop_grace_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+    networks:
+      - crypto-net
+
+# ── Named Volumes ──────────────────────────────────────────────────────────
+volumes:
+  minio-data:
+  mongodb-data:
+  alert-consumer-dlq:
+  ingestion-data:
+
+    # ── Network ────────────────────────────────────────────────────────────────
+networks:
+  crypto-net:
+    driver: bridge

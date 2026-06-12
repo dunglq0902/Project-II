@@ -1,0 +1,263 @@
+# k8s/05-apps.yaml
+# Application services: Ingestion, Alert Engine, Dashboard
+---
+# ============================================================
+# INGESTION SERVICE
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingestion-service
+  namespace: crypto-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingestion-service
+  template:
+    metadata:
+      labels:
+        app: ingestion-service
+    spec:
+      containers:
+        - name: ingestion
+          image: crypto-analytics/ingestion:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:29092"
+            - name: BINANCE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: binance-credentials
+                  key: api-key
+            - name: BINANCE_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: binance-credentials
+                  key: api-secret
+            - name: BACKFILL_MARKER_DIR
+              value: "/data/ingestion"
+            - name: HEARTBEAT_INTERVAL
+              value: "60"
+            - name: MAX_BACKFILL_HOURS
+              value: "48"
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: "100m"
+            limits:
+              memory: 256Mi
+              cpu: "250m"
+          volumeMounts:
+            - name: ingestion-data
+              mountPath: /data/ingestion
+      volumes:
+        - name: ingestion-data
+          persistentVolumeClaim:
+            claimName: ingestion-data-pvc
+---
+# ============================================================
+# ALERT API
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-api
+  namespace: crypto-analytics
+spec:
+  ports:
+    - port: 8000
+  selector:
+    app: alert-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-api
+  namespace: crypto-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-api
+  template:
+    metadata:
+      labels:
+        app: alert-api
+    spec:
+      containers:
+        - name: alert-api
+          image: crypto-analytics/alert-engine:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-credentials
+                  key: uri
+            - name: MONGO_DB
+              value: "crypto_analytics"
+            - name: NOTIFICATION_SVC
+              value: "http://notification-service:8001"
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: "100m"
+            limits:
+              memory: 256Mi
+              cpu: "250m"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 5
+---
+# ============================================================
+# NOTIFICATION SERVICE
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: crypto-analytics
+spec:
+  ports:
+    - port: 8001
+  selector:
+    app: notification-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: crypto-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      containers:
+        - name: notification-svc
+          image: crypto-analytics/alert-engine:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "alert_engine.notifier.notification_service:app", "--host", "0.0.0.0", "--port", "8001"]
+          envFrom:
+            - secretRef:
+                name: notification-secrets
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: "50m"
+            limits:
+              memory: 128Mi
+              cpu: "100m"
+---
+# ============================================================
+# ALERT CONSUMER (Kafka → Alert API bridge)
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-consumer
+  namespace: crypto-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alert-consumer
+  template:
+    metadata:
+      labels:
+        app: alert-consumer
+    spec:
+      containers:
+        - name: alert-consumer
+          image: crypto-analytics/alert-engine:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "alert_engine.consumer.alert_consumer"]
+          env:
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:29092"
+            - name: ALERT_API_URL
+              value: "http://alert-api:8000"
+            - name: ALERT_TOPIC
+              value: "alert-events"
+            - name: CONSUMER_GROUP_ID
+              value: "alert-consumer-group"
+            - name: MAX_RETRIES
+              value: "3"
+            - name: RETRY_BACKOFF_SECONDS
+              value: "2.0"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: "50m"
+            limits:
+              memory: 128Mi
+              cpu: "150m"
+---
+# ============================================================
+# DASHBOARD (Streamlit - NodePort)
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: dashboard
+  namespace: crypto-analytics
+spec:
+  type: NodePort
+  ports:
+    - port: 8501
+      targetPort: 8501
+      nodePort: 30501
+  selector:
+    app: dashboard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: crypto-analytics
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+        - name: dashboard
+          image: crypto-analytics/dashboard:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8501
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-credentials
+                  key: uri
+            - name: MONGO_DB
+              value: "crypto_analytics"
+            - name: ALERT_API_URL
+              value: "http://alert-api:8000"
+            - name: NOTIFICATION_SVC
+              value: "http://notification-service:8001"
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: "100m"
+            limits:
+              memory: 256Mi
+              cpu: "250m"

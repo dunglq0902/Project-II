@@ -1,0 +1,18 @@
+# Environments
+.env
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Data & Logs
+data/
+logs/
+*.csv
+*.parquet
+*.tar
+*.gz
+*.zip
+
+# IDE
+.vscode/

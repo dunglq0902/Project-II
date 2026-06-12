@@ -1,0 +1,32 @@
+# k8s/01a-storage.yaml
+# StorageClass với ReclaimPolicy = Retain
+# Đảm bảo dữ liệu KHÔNG bị xóa khi PVC bị delete hoặc Pod bị recreate
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: crypto-retain
+  labels:
+    project: crypto-analytics-platform
+provisioner: rancher.io/local-path
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+---
+# ============================================================
+# PVC cho Ingestion Service (lưu last_active.txt backfill marker)
+# Được tách riêng vì Ingestion là Deployment, không phải StatefulSet
+# ============================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ingestion-data-pvc
+  namespace: crypto-analytics
+  labels:
+    app: ingestion-service
+    project: crypto-analytics-platform
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: crypto-retain
+  resources:
+    requests:
+      storage: 1Gi

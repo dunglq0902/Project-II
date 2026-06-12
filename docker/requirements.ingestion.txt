@@ -1,0 +1,8 @@
+# docker/requirements.ingestion.txt
+confluent-kafka==2.3.0
+websockets==12.0
+aiohttp==3.9.1
+asyncio-throttle==1.0.2
+python-dotenv==1.0.0
+requests==2.31.0
+apscheduler==3.10.4
